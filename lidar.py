@@ -15,22 +15,67 @@ from lidar_aux import aux_file
 class lidar(object):
     """
     Class encapsulating lidar data
+import matplotlib.pyplot as plt
+import numpy as np
+import lidar
+plt.ion()
+import glob
+from netCDF4 import Dataset
+from scipy import signal,optimize
+import sys
+    
+sys.path.append('/home/h05/frti/lidar_stuff/lidar/lidar_python')
+
+b436raw='/data/local/frti/2009-04-21_B436'
+b923raw='/data/local/frti/lidar/lidar_bin/2015-08-12_B923/'
+b923core='/data/local/frti/lidar/core_faam_20150812_v004_r2_b923_1hz.nc'
+b436core='/data/local/frti/b436/core_faam_20090421_v004_r0_b436_1hz.nc'
+
+b923='/home/h05/frti/lidar_stuff/lidar/python/metoffice-lidar_faam_20150812_r0_B923_raw.nc'
+
+l=lidar.lidar(b923raw,b923core,ncfolder='$DATADIR') # read in raw data - create netcdf
+l.merge_aux()                   # merge in positions
+
+l=lidar.lidar('/home/h05/frti/lidar_stuff/lidar/lidar_python/metoffice-lidar_faam_20150812_r0_XXXX_raw.nc' ) # read in netcdf
+Alt=l['Altitude (m)'][:]
+
+c=l.curtain[0][:]
+plt.imshow(c[::-1,:],vmin=0,vmax=0.5,cmap='afmhot')
+
+l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/project/mocca/flight_data/M177/LIDAR/2017-03-02',heights='/project/mocca/flight_data/M177/LIDAR/horace_2017_03_02.dat',jpg_folder='/home/h05/frti/public_html/lidar',vmax=8e2,vmin=0,cmap='afmhot')
+
+
+l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/home/h05/frti/lidar_stuff/',heights='/data/local/frti/lidar/core_faam_20150812_v004_r2_b923_1hz.nc',jpg_folder='/home/h05/frti/public_html/lidar',vmax=8e2,vmin=0,cmap='afmhot')
+
+l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/data/local/frti/lidar/lidar_bin/2015-08-12_B923/',heights='/data/local/frti/lidar/core_faam_20150812_v004_r2_b923_1hz.nc',jpg_folder='/home/h05/frti/public_html/lidar',vmax=8e2,vmin=0,cmap='afmhot')
+
+
+    
     """
     rawfolder=r"D:\Leosphere\EZAeroData"
     ncfolder=r"D:\NetCDF"
+    _range_correction="get_rc_corr"
+    rc_div=0.0 # 166.7
+    _trigger=2054
     
-    def __init__(self,data=None,aux='HTTP',trigger=2054,**kwargs):
+    def __init__(self,data=None,aux='HTTP',**kwargs):
         """
         Initialise from 
             data: Path to Netcdf file, or path to raw data, or extant lidar data
             aux:  Auxilliary ( location ) data, as Core netcdf, or "Horace" text file, or HTTP to live aicraft data
             trigger: Point in raw data where laser fired...
         """
+        print(dir(self))
+        print(kwargs)
         for k in kwargs:
             if(k in dir(self)):
+                print(k,kwargs[k])
                 self.__dict__[k]=kwargs[k]
+                print(self.ncfolder)
 
         self.aux=aux
+        self.ncfolder=os.path.expandvars(self.ncfolder)
+        self.rawfolder=os.path.expandvars(self.rawfolder)
         if(not(os.path.isdir(self.ncfolder))):
             self.ncfolder=""
         if(type(data)==str):
@@ -39,6 +84,7 @@ class lidar(object):
                 self.ncfolder=os.path.dirname(data)
                 self.data=Dataset(data,**kwargs)
             elif(os.path.isdir(data)):
+                print(data,self.ncfolder,kwargs)
                 self.datapath,self.data=self.create(data,filename=self.ncfolder,**kwargs)
                 self.rawfolder=data
                 self.add_raw()
@@ -67,13 +113,14 @@ class lidar(object):
             add+=1
         self.profile=[lidar.getprofile(self.get_prof,self,chan=0),
                       lidar.getprofile(self.get_prof,self,chan=1)]
-        self.range_corrected=[lidar.getprofile(self.get_rc,self,chan=0),
-                              lidar.getprofile(self.get_rc,self,chan=1)]
+        self.range_correction=self._range_correction
         self.image=[lidar.getprofile(self.make_img,self,chan=0),
                     lidar.getprofile(self.make_img,self,chan=1)]
         self.curtain=[lidar.getprofile(self.make_curtain,self,chan=0),
-                    lidar.getprofile(self.make_curtain,self,chan=1)]
-        self.trigger=trigger
+                    lidar.getprofile(self.make_curtain,self,chan=1),
+                    lidar.getprofile(self.make_curtain,self,chan=2)]
+        self.ratio=lidar.getprofile(self.get_ratio,self)
+        self.trigger=self._trigger
 
     @property
     def aux(self):
@@ -87,6 +134,20 @@ class lidar(object):
         except AttributeError:
             self.aux=aux_file(aux)
           
+    @property
+    def range_correction(self):
+        return self._range_correction
+    @range_correction.setter
+    def range_correction(self,rc):
+        try:
+            self.range_corrected=[lidar.getprofile(self.__getattribute__(rc),self,chan=0),
+                                  lidar.getprofile(self.__getattribute__(rc),self,chan=1)]
+            self._range_correction=rc
+        except AttributeError:
+            pass
+          
+
+
     @property
     def trigger(self):
         return self._trigger
@@ -218,12 +279,23 @@ class lidar(object):
             except AttributeError:
                 return self.variables[att]
         
-    def make_curtain(self,n,chan=0,heights='ALT_GIN',maxheight=0):
-        try:
-            h=self.__getattribute__(heights)[n]
-            w=self['Raw_NumberOfSignal'][self.bind[n]]/self.getncattr('PRF (Hz)')
-        except AttributeError:
-            raise AttributeError('No height data')
+    def make_curtain(self,n,chan=0,heights=['ALT_GIN','Altitude (m)','PALT_RVS','Pressure (hPa)'],maxheight=0):
+        h=None
+        for height in heights:
+            if(height in dir(self)):
+                try:
+                    h=self.__getattribute__(height)[n]
+                    break
+                except AttributeError:
+                    pass
+            if(height in self.variables):
+                h=self.variables[height][n]
+                break
+        if h==None:
+            raise AttributeError('No height data found')
+        
+            
+        w=self['Raw_NumberOfSignal'][self.bind[n]]/self.getncattr('PRF (Hz)')
         h/=1.5
         if(maxheight==0):
             maxheight=np.nanmax(h)
@@ -234,7 +306,10 @@ class lidar(object):
         if(mxh<1):
             mxh=1
         #im=np.zeros((mxh,self.nprof))
-        rc=self.range_corrected[chan][n][:] # [self.trigger:,:]
+        if(chan==2):
+            rc=self.ratio[n][:]
+        else:
+            rc=self.range_corrected[chan][n][:] # [self.trigger:,:]
 
         if(len(rc.shape)<2):
            rc=rc.reshape(rc.shape+(1,))
@@ -290,23 +365,36 @@ class lidar(object):
         sky=np.mean(s[:self.trigger-5],axis=0)
         s=(s-sky)
         return s
+
+    def get_rc(self,n,chan=0):
+        s=self.get_prof(n,chan=chan)
+        if(len(s.shape)>1):
+            d=self.distance.reshape(self.distance.shape+(1,))
+        else:
+            d=self.distance
+        return (s*d**2)[self.trigger:]
+
+    def get_ratio(self,n):
+        s=self.get_prof(n,chan=1)/self.get_prof(n,chan=0)
+        return s[self.trigger:]
+        
         
 
-    def get_rc(self,n,chan=0,div=166.0):
+    def get_rc_corr(self,n,chan=0):
         s=self.get_prof(n,chan=chan)
         if(len(s.shape)>1):
             d=self.distance.reshape(self.distance.shape+(1,))
         else:
             d=self.distance
-        return (s*(1.0+d*2.0/div)**2)[self.trigger:]
+        return (s*(self.rc_div/2.0+d)**2)[self.trigger:]
 
-    def get_rc_test(self,n,chan=0,div=166.0):
+    def get_rc_test(self,n,chan=0,div=167.0):
         s=self.get_prof(n,chan=chan)
         if(len(s.shape)>1):
             d=self.distance.reshape(self.distance.shape+(1,))
         else:
             d=self.distance
-        d=(1.0+d[self.trigger:]*2.0/div)
+        d=(div+d[self.trigger:]*2.0)
         l=d.shape[0]
         z=np.identity(l)
         m=((l-1)/2.0-np.abs((l-1)/2.0-np.arange(l))).astype(int)
@@ -320,14 +408,6 @@ class lidar(object):
         
         return (np.mat(s[self.trigger:].T)*z).T.A
 
-
-    def get_rc_old(self,n,chan=0):
-        s=self.get_prof(n,chan=chan)
-        if(len(s.shape)>1):
-            d=self.distance.reshape(self.distance.shape+(1,))
-        else:
-            d=self.distance
-        return (s*d**2)[self.trigger:]
 
 
     def get_aux(self,n,para='PALT_RVS'):
@@ -377,7 +457,7 @@ class lidar(object):
             self.rawfolder=folder
         if(not(files)):
             files=glob.glob(os.path.join(self.rawfolder,'*.raw'))
-        last=self['Time'][-1]
+        last=self['Time'][:][-1]  # Don't know why I need [:] ...
         added=False
         for f in sorted(files):
             t=time.mktime(time.strptime(f[-32:-13]+"-UTC","%Y-%m-%d_%H-%M-%S-%Z"))

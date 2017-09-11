@@ -179,6 +179,7 @@ class aux_file(object):
         
     def get_values(self,times,para='ALT_GIN'):
         ind=self.get_indexes(times)
+        ind[ind>=len(self.data)]=len(self.data)-1
         d=self.data[para][ind]
         d[ind<0]=np.nan
         return d
