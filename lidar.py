@@ -11,6 +11,10 @@ from collections import OrderedDict
 from lidar_aux import aux_file
 from lidar_raw import lidar_raw,rebuild_raw
 from lidar_aux import aux_file
+import zipfile
+import re
+import subprocess
+
 
 class lidar(object):
     """
@@ -54,9 +58,12 @@ l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/data/loc
     """
     rawfolder=r"D:\Leosphere\EZAeroData"
     ncfolder=r"D:\NetCDF"
-    _range_correction="get_rc_corr"
+    _range_correction="get_rc"
     rc_div=0.0 # 166.7
     _trigger=2054
+    _view="nadir"
+    maxheight=0
+    fltno='XXXX'
     
     def __init__(self,data=None,aux='HTTP',**kwargs):
         """
@@ -79,10 +86,18 @@ l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/data/loc
         if(not(os.path.isdir(self.ncfolder))):
             self.ncfolder=""
         if(type(data)==str):
+            if(self.fltno=='XXXX'):
+                mo=re.search('[abcdABCD]\d\d\d.',data)
+                if(mo):
+                    self.fltno=mo.group()[:-1]
             if(data.endswith(".nc")):
                 self.datapath=data
                 self.ncfolder=os.path.dirname(data)
                 self.data=Dataset(data,**kwargs)
+            elif(data.endswith(".zip")):
+                self.rawfolder=zipfile.ZipFile(data)
+                self.datapath,self.data=self.create(self.rawfolder,filename=self.ncfolder,**kwargs)
+                self.add_raw()
             elif(os.path.isdir(data)):
                 print(data,self.ncfolder,kwargs)
                 self.datapath,self.data=self.create(data,filename=self.ncfolder,**kwargs)
@@ -112,16 +127,29 @@ l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/data/loc
             self.bind[wb+add]=wb
             add+=1
         self.profile=[lidar.getprofile(self.get_prof,self,chan=0),
-                      lidar.getprofile(self.get_prof,self,chan=1)]
+                      lidar.getprofile(self.get_prof,self,chan=1),
+                      lidar.getprofile(self.get_prof,self,chan=2)]
         self.range_correction=self._range_correction
         self.image=[lidar.getprofile(self.make_img,self,chan=0),
-                    lidar.getprofile(self.make_img,self,chan=1)]
+                    lidar.getprofile(self.make_img,self,chan=1),
+                    lidar.getprofile(self.make_img,self,chan=2)]
         self.curtain=[lidar.getprofile(self.make_curtain,self,chan=0),
                     lidar.getprofile(self.make_curtain,self,chan=1),
                     lidar.getprofile(self.make_curtain,self,chan=2)]
-        self.ratio=lidar.getprofile(self.get_ratio,self)
         self.trigger=self._trigger
 
+    @property
+    def view(self):
+        return self._view
+    @view.setter
+    def view(self,view):
+        if(view.lower().startswith("n") or view.lower().startswith("d")):
+            self._view="nadir"
+        elif(view.lower().startswith("z") or view.lower().startswith("u")):
+            self._view="zenith"
+        else:
+            raise ValueError("View should be zenith ( up ) or nadir (down)")
+        print("View set to {}".format(self._view))
     @property
     def aux(self):
         return self._aux
@@ -141,7 +169,8 @@ l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/data/loc
     def range_correction(self,rc):
         try:
             self.range_corrected=[lidar.getprofile(self.__getattribute__(rc),self,chan=0),
-                                  lidar.getprofile(self.__getattribute__(rc),self,chan=1)]
+                                  lidar.getprofile(self.__getattribute__(rc),self,chan=1),
+                                  lidar.getprofile(self.__getattribute__(rc),self,chan=2)]
             self._range_correction=rc
         except AttributeError:
             pass
@@ -279,49 +308,54 @@ l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/data/loc
             except AttributeError:
                 return self.variables[att]
         
-    def make_curtain(self,n,chan=0,heights=['ALT_GIN','Altitude (m)','PALT_RVS','Pressure (hPa)'],maxheight=0):
-        h=None
+    def make_curtain(self,n,chan=0,heights=['ALT_GIN','Altitude (m)','PALT_RVS','Pressure (hPa)']):
+        hx=None
         for height in heights:
             if(height in dir(self)):
                 try:
-                    h=self.__getattribute__(height)[n]
+                    hx=self.__getattribute__(height)[n]
                     break
                 except AttributeError:
                     pass
             if(height in self.variables):
-                h=self.variables[height][n]
+                hx=self.variables[height][n]
                 break
-        if h==None:
+        if hx==None:
             raise AttributeError('No height data found')
         
             
         w=self['Raw_NumberOfSignal'][self.bind[n]]/self.getncattr('PRF (Hz)')
-        h/=1.5
-        if(maxheight==0):
-            maxheight=np.nanmax(h)
-        if(maxheight!=maxheight):
-            print(Warning("Invalid height - NaN"))
-            maxheight=0
+        h=hx/1.5
+        maxheight=self.maxheight
+        if(self.view=="nadir"):
+            if(maxheight==0):
+                maxheight=np.nanmax(h)
+            if(maxheight!=maxheight):
+                print(Warning("Invalid height - NaN"))
+                maxheight=0
+        elif(self.view=="zenith"):
+            if(maxheight==0):
+                maxheight=10000
         mxh=maxheight
         if(mxh<1):
             mxh=1
         #im=np.zeros((mxh,self.nprof))
-        if(chan==2):
-            rc=self.ratio[n][:]
-        else:
-            rc=self.range_corrected[chan][n][:] # [self.trigger:,:]
+        rc=self.range_corrected[chan][n][:] # [self.trigger:,:]
 
         if(len(rc.shape)<2):
            rc=rc.reshape(rc.shape+(1,))
         
-        im=np.zeros((mxh,rc.shape[1]))
+        im=np.full((mxh,rc.shape[1]),np.nan)
         
         for prof in range(rc.shape[1]):
             h1=h[prof]
             if(h1==h1):  # Check if NaN
                 h1=int(h1)
                 if(h1>0):
-                   im[mxh-h1:,prof]=rc[:h1,prof]
+                    if(self.view=="nadir"):
+                        im[mxh-h1:,prof]=rc[:h1,prof]
+                    else:
+                        im[:mxh-h1,prof]=rc[mxh-h1:0:-1,prof]
         return im[::-1,:]
 
     def make_img(self,n,chan=0,heights='ALT_GIN',vs='Time',maxheight=0,reduction=10):
@@ -359,55 +393,43 @@ l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/data/loc
         return im
  
     def get_prof(self,n,chan=0):
-        s=self['Raw_gain%i' % chan][self.bind[n]]*self['rawSignal_%i' % chan][:,n]/self['Raw_NumberOfSignal'][self.bind[n]]
+        if(chan==2):
+            return self.get_ratio(n)
+        rawsig=self['rawSignal_%i' % chan][:,n]
+        toobig= rawsig==1310720
+        rawsig=rawsig.astype(float)
+        rawsig[toobig]=np.nan          #  Maximum range - flatline
+        s=self['Raw_gain%i' % chan][self.bind[n]]*rawsig/self['Raw_NumberOfSignal'][self.bind[n]]
         blind=self['Blind_gain%i' % chan][self.bind[n]]*self['rawBlind_%i' % chan][:,self.bind[n]]/self['Blind_NumberOfSignal'][self.bind[n]]
         s-=blind
         sky=np.mean(s[:self.trigger-5],axis=0)
         s=(s-sky)
         return s
 
+    def get_ratio(self,n):
+        return self.get_prof(n,chan=1)/self.get_prof(n,chan=0)       
+
+
+
     def get_rc(self,n,chan=0):
         s=self.get_prof(n,chan=chan)
+        if(chan==2):
+            return s[self.trigger:]
         if(len(s.shape)>1):
             d=self.distance.reshape(self.distance.shape+(1,))
         else:
             d=self.distance
         return (s*d**2)[self.trigger:]
 
-    def get_ratio(self,n):
-        s=self.get_prof(n,chan=1)/self.get_prof(n,chan=0)
-        return s[self.trigger:]
-        
-        
-
     def get_rc_corr(self,n,chan=0):
         s=self.get_prof(n,chan=chan)
+        if(chan==2):
+            return s[self.trigger:]
         if(len(s.shape)>1):
             d=self.distance.reshape(self.distance.shape+(1,))
         else:
             d=self.distance
         return (s*(self.rc_div/2.0+d)**2)[self.trigger:]
-
-    def get_rc_test(self,n,chan=0,div=167.0):
-        s=self.get_prof(n,chan=chan)
-        if(len(s.shape)>1):
-            d=self.distance.reshape(self.distance.shape+(1,))
-        else:
-            d=self.distance
-        d=(div+d[self.trigger:]*2.0)
-        l=d.shape[0]
-        z=np.identity(l)
-        m=((l-1)/2.0-np.abs((l-1)/2.0-np.arange(l))).astype(int)
-        st=np.arange(l)-m
-        ml=1+2*m
-        import scipy.signal
-        for i in range(l):
-            sig=d[i]/((np.pi*2)**0.5)
-            j=scipy.signal.gaussian(ml[i],sig)
-            z[i,st[i]:st[i]+ml[i]]=j*d[i]*d[i]/np.sum(j)
-        
-        return (np.mat(s[self.trigger:].T)*z).T.A
-
 
 
     def get_aux(self,n,para='PALT_RVS'):
@@ -441,11 +463,16 @@ l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/data/loc
 
 
     def create(self,folder,**kwargs):
-        fs=glob.glob(os.path.join(folder,'*.raw'))
+        zfile=None
         try:
-            l=lidar_raw(sorted(fs)[0])
+            fs=[f for f in folder.namelist() if f.endswith('.raw')]
+            zfile=folder
+        except AttributeError:
+            fs=glob.glob(os.path.join(folder,'*.raw'))
+        try:
+            l=lidar_raw(sorted(fs)[0],zipfile=zfile)
             print(l)
-            ncpath,nc=l.createrawNetCDF(**kwargs)
+            ncpath,nc=l.createrawNetCDF(fltno=self.fltno,**kwargs)
             l.addData(nc)
             return ncpath,nc
         except IndexError:
@@ -453,16 +480,21 @@ l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/data/loc
         
 
     def add_raw(self,folder="",files=[]):
+        zfile=None
         if(folder):
             self.rawfolder=folder
         if(not(files)):
-            files=glob.glob(os.path.join(self.rawfolder,'*.raw'))
+            try:
+                files=[f for f in self.rawfolder.namelist() if f.endswith('.raw')]
+                zfile=self.rawfolder
+            except AttributeError:
+                files=glob.glob(os.path.join(self.rawfolder,'*.raw'))
         last=self['Time'][:][-1]  # Don't know why I need [:] ...
         added=False
         for f in sorted(files):
             t=time.mktime(time.strptime(f[-32:-13]+"-UTC","%Y-%m-%d_%H-%M-%S-%Z"))
             if(t>last):     
-                lidar_raw(f).addData(self)
+                lidar_raw(f,zfile).addData(self)
                 added=True
         return added
                  
@@ -470,7 +502,7 @@ l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/data/loc
         rebuild_raw(self,folder)        
 
 
-    def createCurtainNC(self,filename='',fltno='XXXX',revision=0):
+    def createCurtainNC(self,filename='',revision=0):
         """ Opens a raw netcdf file and creates 
         variables and attibutes.
         The global attributes are based on the "ConfigSoftware" header info
@@ -479,7 +511,7 @@ l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/data/loc
         """
         date=time.strftime('%Y%m%d',time.gmtime(self['Time'][0]))
         if(not(filename) or os.path.isdir(filename)):
-            fn=('metoffice-lidar_faam_'+date+'_r%1.1i_'+fltno+'_level1.nc') % revision
+            fn=('metoffice-lidar_faam_'+date+'_r%1.1i_'+self.fltno+'_level1.nc') % revision
             filename=os.path.join(filename,fn)
         nc=Dataset(filename,"w",clobber=True)
         for att in self.ncattrs():
@@ -543,4 +575,5 @@ def heightpress(height,qnh=1013.25):
     else:
         return heightpress(height+pressheight(qnh))
 
+    
 

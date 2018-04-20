@@ -9,16 +9,19 @@ import matplotlib.pyplot as plt
 import scipy.misc
 from collections import OrderedDict
 from lidar_aux import aux_file
-
+import StringIO
 
 class lidar_raw:
     """
     Class for reading in raw lidar files,
     and writing raw netcdf lidar data
     """
-    def __init__(self,filename):
+    def __init__(self,filename,zipfile=None):
         self.filename=filename
-        self.file=open(filename,'rb')
+        if(zipfile):
+            self.file=StringIO.StringIO(zipfile.open(filename).read())
+        else:
+            self.file=open(filename,'rb')
         self.header=OrderedDict()
         self.blind_smoothing=None
         section=''
@@ -102,7 +105,11 @@ class lidar_raw:
 
     def get_raw(self):
         dims=self.get_dims()
-        data=np.fromfile(self.file,count=dims[0]*dims[1],dtype='>i4').reshape(dims)
+        try:
+            data=np.fromfile(self.file,count=dims[0]*dims[1],dtype='>i4').reshape(dims)
+        except IOError:
+            data=np.frombuffer(self.file.getvalue()[self.file.tell():],count=dims[0]*dims[1],dtype='>i4').reshape(dims)
+            self.file.seek(dims[0]*dims[1]*4,1)
         return dims,data
 
     def getdate(self):
@@ -116,6 +123,7 @@ class lidar_raw:
         if(not(filename) or os.path.isdir(filename)):
             fn=('metoffice-lidar_faam_'+self.getdate()+'_r%1.1i_'+fltno+'_raw.nc') % revision
             filename=os.path.join(filename,fn)
+        print(filename)
         return filename,self.openrawNetCDF(Dataset(filename,"w",clobber=True))
 
     def openrawNetCDF(self,nc):
