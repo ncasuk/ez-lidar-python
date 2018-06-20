@@ -10,7 +10,6 @@ import scipy.misc
 from collections import OrderedDict
 from lidar_aux import aux_file
 from lidar_raw import lidar_raw,rebuild_raw
-from lidar_aux import aux_file
 import zipfile
 import re
 import subprocess
@@ -65,7 +64,7 @@ l=lidar.lidar_live('/home/h05/frti/public_html/lidar/',from_rawfolder='/data/loc
     maxheight=0
     fltno='XXXX'
     
-    def __init__(self,data=None,aux='HTTP',**kwargs):
+    def __init__(self,data=None,aux='',**kwargs):
         """
         Initialise from 
             data: Path to Netcdf file, or path to raw data, or extant lidar data
