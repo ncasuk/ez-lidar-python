@@ -14,23 +14,23 @@ Must have Python installed and Numpy at the very least.
 ```
 import lidar
 ```
-### To create the file - do something like this
+To create the file - do something like this
 ```
 l_b920=lidar.lidar('2015-08-07_B920.zip',ncfolder='',aux='core_faam_20150807_v004_r3_b920.nc',clobber=True)
 ```
 
-### Merge in the auxilliary data
+Merge in the auxilliary data
 ```
 l_b920.merge_aux()
 ```
 
-### Make sure they are closed
+Make sure they are closed
 ```
 l_b920.close()
 ```
 
 
-### To open a lidar file
+To open a lidar file
 
 ```
 l_b920=lidar.lidar('metoffice-lidar_faam_20150807_r0_B920_raw.nc')
@@ -73,11 +73,10 @@ Pressure (hPa)
 Temperature (degC)
 Humidity (%)
 ```
-### To get some raw data out as an array 
+To get some raw data out as an array 
 ```
-#eg.
 Alt=l_b920['Altitude (m)'][:]
-'''
+```
 There are some 'special' parameters which are not directly from the NetCDF
 ```
 l_b920.bind # This is indexing for the Blind measurements which is less frequent than the measurements..
